@@ -1,0 +1,51 @@
+#!/bin/sh
+
+DATA_FILE="/tmp/opencode-cost.json"
+
+total="0.00"
+if [ -f "$DATA_FILE" ]; then
+  if command -v jq 2>/dev/null; then
+    total=$(jq '[.sessions[].cost] | add // 0' "$DATA_FILE")
+    total=$(printf "%.2f" "$total")
+  else
+    sum=$(grep -oE '"cost":[0-9]+(\.[0-9]+)?' "$DATA_FILE" | sed 's/"cost"://' | paste -sd+ | bc)
+    total=$(printf "%.2f" "${sum:-0}")
+  fi
+fi
+
+balance="?"
+if [ -n "$OPENROUTER_API_KEY" ]; then
+  auth="Authorization: Bearer $OPENROUTER_API_KEY"
+
+  response=$(wget -q -O- --header="$auth" "https://openrouter.ai/api/v1/credits" 2>/dev/null)
+  if [ -n "$response" ]; then
+    tc=$(echo "$response" | grep -oE '"total_credits":[0-9]+(\.[0-9]+)?' | sed 's/"total_credits"://')
+    tu=$(echo "$response" | grep -oE '"total_usage":[0-9]+(\.[0-9]+)?' | sed 's/"total_usage"://')
+    if [ -n "$tc" ] && [ -n "$tu" ]; then
+      balance=$(echo "scale=2; $tc - $tu" | bc)
+      balance=$(printf "%.2f" "$balance")
+    fi
+  fi
+
+  if [ -z "$balance" ] || [ "$balance" = "0.00" ]; then
+    response=$(wget -q -O- --header="$auth" "https://openrouter.ai/api/v1/auth/key" 2>/dev/null)
+    if [ -n "$response" ]; then
+      lr=$(echo "$response" | grep -oE '"limit_remaining":[0-9]+(\.[0-9]+)?' | sed 's/"limit_remaining"://')
+      cr=$(echo "$response" | grep -oE '"credits":[0-9]+(\.[0-9]+)?' | sed 's/"credits"://')
+      if [ -n "$lr" ]; then
+        balance=$(printf "%.2f" "$lr")
+      elif [ -n "$cr" ]; then
+        balance=$(printf "%.2f" "$cr")
+      fi
+    fi
+  fi
+fi
+
+COST_VAL="\$${total}"
+BAL_VAL="$balance"
+[ "$BAL_VAL" != "?" ] && BAL_VAL="\$${balance}"
+
+echo "╔══════════════════════════╗"
+printf "║ %-12s %5s ║\n" "Session cost" "$COST_VAL"
+printf "║ %-12s %5s ║\n" "OpenRouter" "$BAL_VAL"
+echo "╚══════════════════════════╝"
